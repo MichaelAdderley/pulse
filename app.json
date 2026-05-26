@@ -1,7 +1,8 @@
 {
   "expo": {
     "name": "Pulse",
-    "slug": "Pulse",
+    "slug": "pulse",
+    "owner": "matterdesign",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -21,6 +22,11 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "ebbd16e7-41d2-466e-a616-8c78507a0aba"
+      }
     }
   }
 }
