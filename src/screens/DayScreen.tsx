@@ -1,20 +1,28 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Haptics from 'expo-haptics';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Image,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { ExerciseRow } from '../components/ExerciseRow';
-import { PauseIcon, PlayIcon, ResetIcon } from '../components/icons';
+import { PauseIcon, PlayIcon, PlusIcon, ResetIcon } from '../components/icons';
 import { WeekStrip } from '../components/WeekStrip';
-import { getPlanForDate, resetPlanProgress } from '../data/mockWorkouts';
+import { getPlanForDate, resetPlanProgress } from '../data/defaultPlan';
 import { theme } from '../theme';
 import { DayPlan, Exercise, ExerciseCategory } from '../types';
-import { startOfDay, toISODate } from '../utils/date';
+import { isSameDay, startOfDay, toISODate } from '../utils/date';
+import { formatDurationLabel } from '../utils/time';
+import { AddExerciseScreen, NewExerciseInput } from './AddExerciseScreen';
+
+const STORAGE_KEY = 'pulse.plansByDate.v1';
 
 type SectionDef = {
   key: ExerciseCategory;
@@ -27,7 +35,6 @@ const SECTIONS: SectionDef[] = [
   { key: 'cooldown', label: 'Cooldown' },
 ];
 
-const WORKOUT_ROUNDS = 3;
 const REST_SECONDS = 30;
 
 type Step =
@@ -56,11 +63,18 @@ function buildSequence(plan: DayPlan): Step[] {
     first = false;
   };
 
-  plan.warmup.forEach((e) => pushExercise(e, 1));
-  for (let r = 1; r <= WORKOUT_ROUNDS; r++) {
-    plan.workout.forEach((e) => pushExercise(e, r));
-  }
-  plan.cooldown.forEach((e) => pushExercise(e, 1));
+  // Each category runs as a circuit: as many rounds as its exercises call
+  // for, where an exercise only appears in rounds up to its own segment count.
+  const pushCategory = (list: Exercise[]) => {
+    const maxRounds = list.reduce((max, e) => Math.max(max, e.totalRounds), 0);
+    for (let r = 1; r <= maxRounds; r++) {
+      list.filter((e) => e.totalRounds >= r).forEach((e) => pushExercise(e, r));
+    }
+  };
+
+  pushCategory(plan.warmup);
+  pushCategory(plan.workout);
+  pushCategory(plan.cooldown);
 
   return steps;
 }
@@ -80,6 +94,7 @@ const avatarSource = require('../../assets/avatar.png');
 export function DayScreen() {
   const [selectedDate, setSelectedDate] = useState<Date>(startOfDay(new Date()));
   const [plansByDate, setPlansByDate] = useState<Record<string, DayPlan>>({});
+  const [addVisible, setAddVisible] = useState(false);
 
   const isoKey = toISODate(selectedDate);
   const plan: DayPlan = useMemo(
@@ -92,65 +107,133 @@ export function DayScreen() {
   const [sessionActive, setSessionActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [justCompleted, setJustCompleted] = useState(false);
 
   const sequence = useMemo<Step[]>(() => buildSequence(plan), [isoKey, plan]);
   const sequenceRef = useRef(sequence);
   sequenceRef.current = sequence;
 
-  // Reset session if user switches day
+  // Wall-clock anchors: the timer derives remaining time from real timestamps,
+  // so it stays correct across app backgrounding and interval throttling.
+  const stepIndexRef = useRef(0);
+  const stepEndsAtRef = useRef(0);
+  const pausedRemainingMsRef = useRef(0);
+  const completedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Restore saved plans on launch; persist on every change after that
+  const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
-    setPlaying(false);
-    setSessionActive(false);
-    setStepIndex(0);
-    setSecondsLeft(0);
-  }, [isoKey]);
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then((raw) => {
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          setPlansByDate(parsed as Record<string, DayPlan>);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setHydrated(true));
+  }, []);
+  useEffect(() => {
+    if (!hydrated) return;
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(plansByDate)).catch(() => {});
+  }, [plansByDate, hydrated]);
 
   const endSession = () => {
+    stepIndexRef.current = 0;
+    stepEndsAtRef.current = 0;
+    pausedRemainingMsRef.current = 0;
     setPlaying(false);
     setSessionActive(false);
     setStepIndex(0);
     setSecondsLeft(0);
   };
 
-  // Per-second tick while playing
+  // Reset session if user switches day
+  useEffect(() => {
+    endSession();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isoKey]);
+
+  // Keep the screen on while a session is in progress
+  useEffect(() => {
+    if (!sessionActive) return;
+    activateKeepAwakeAsync().catch(() => {});
+    return () => {
+      deactivateKeepAwake().catch(() => {});
+    };
+  }, [sessionActive]);
+
+  useEffect(
+    () => () => {
+      if (completedTimerRef.current) clearTimeout(completedTimerRef.current);
+    },
+    [],
+  );
+
+  const commitStep = (step: Extract<Step, { kind: 'exercise' }>) => {
+    setPlansByDate((prevPlans) => {
+      const current = prevPlans[isoKey] ?? getPlanForDate(selectedDate);
+      return {
+        ...prevPlans,
+        [isoKey]: setExerciseRound(current, step.exerciseId, step.round),
+      };
+    });
+  };
+
+  const completeSession = () => {
+    endSession();
+    setJustCompleted(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
+      () => {},
+    );
+    if (completedTimerRef.current) clearTimeout(completedTimerRef.current);
+    completedTimerRef.current = setTimeout(() => setJustCompleted(false), 2500);
+  };
+
+  // Timer loop: recompute remaining time from the wall clock. If the app was
+  // suspended past one or more step boundaries, catch up by committing every
+  // finished step before settling on the current one.
   useEffect(() => {
     if (!playing) return;
-    const id = setInterval(() => {
-      setSecondsLeft((prev) => {
-        if (prev > 1) return prev - 1;
+    const tick = () => {
+      const seq = sequenceRef.current;
+      const now = Date.now();
+      let idx = stepIndexRef.current;
+      let endsAt = stepEndsAtRef.current;
 
-        // Current step just finished — commit its progress
-        const seq = sequenceRef.current;
-        const currentStep = seq[stepIndex];
-        if (currentStep?.kind === 'exercise') {
-          setPlansByDate((prevPlans) => {
-            const current = prevPlans[isoKey] ?? getPlanForDate(selectedDate);
-            return {
-              ...prevPlans,
-              [isoKey]: setExerciseRound(
-                current,
-                currentStep.exerciseId,
-                currentStep.round,
-              ),
-            };
-          });
-        }
+      if (now < endsAt) {
+        const remaining = Math.ceil((endsAt - now) / 1000);
+        setSecondsLeft((prev) => (prev === remaining ? prev : remaining));
+        return;
+      }
 
-        const nextIdx = stepIndex + 1;
-        if (nextIdx >= seq.length) {
-          // Session complete
-          setPlaying(false);
-          setSessionActive(false);
-          setStepIndex(0);
-          return 0;
+      let advanced = false;
+      while (now >= endsAt) {
+        const step = seq[idx];
+        if (step?.kind === 'exercise') commitStep(step);
+        idx += 1;
+        advanced = true;
+        if (idx >= seq.length) {
+          completeSession();
+          return;
         }
-        const nextStep = seq[nextIdx];
-        setStepIndex(nextIdx);
-        return nextStep.durationSec;
-      });
-    }, 1000);
+        endsAt += seq[idx].durationSec * 1000;
+      }
+
+      stepIndexRef.current = idx;
+      stepEndsAtRef.current = endsAt;
+      setStepIndex(idx);
+      setSecondsLeft(Math.ceil((endsAt - now) / 1000));
+      if (advanced) {
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+      }
+    };
+    tick();
+    const id = setInterval(tick, 250);
     return () => clearInterval(id);
-  }, [playing, stepIndex, isoKey, selectedDate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, isoKey]);
 
   // Active exercise info (if current step is exercise)
   // Show the active row whenever a session is in progress — even while paused —
@@ -160,18 +243,21 @@ export function DayScreen() {
     sessionActive && currentStep?.kind === 'exercise' ? currentStep.exerciseId : null;
   const activeRound =
     sessionActive && currentStep?.kind === 'exercise' ? currentStep.round : undefined;
+  const isResting = sessionActive && currentStep?.kind === 'rest';
+  const restClock = `${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')}`;
 
   const handleStart = () => {
     if (sequence.length === 0) return;
 
-    // Resume from pause: keep stepIndex and secondsLeft as-is
+    // Resume from pause: re-anchor the current step's deadline to now
     if (sessionActive) {
+      stepEndsAtRef.current = Date.now() + pausedRemainingMsRef.current;
       setPlaying(true);
       return;
     }
 
     // Fresh start: clear progress; completedRounds will be committed at the
-    // end of each step by the timer effect, so the first exercise stays at
+    // end of each step by the timer loop, so the first exercise stays at
     // its in-progress visual until it actually finishes.
     const first = sequence[0];
     setPlansByDate((prev) => {
@@ -179,6 +265,9 @@ export function DayScreen() {
       return { ...prev, [isoKey]: resetPlanProgress(current) };
     });
 
+    setJustCompleted(false);
+    stepIndexRef.current = 0;
+    stepEndsAtRef.current = Date.now() + first.durationSec * 1000;
     setStepIndex(0);
     setSecondsLeft(first.durationSec);
     setSessionActive(true);
@@ -186,6 +275,10 @@ export function DayScreen() {
   };
 
   const handlePause = () => {
+    pausedRemainingMsRef.current = Math.max(
+      0,
+      stepEndsAtRef.current - Date.now(),
+    );
     setPlaying(false);
   };
 
@@ -195,6 +288,69 @@ export function DayScreen() {
       return { ...prev, [isoKey]: resetPlanProgress(current) };
     });
     endSession();
+  };
+
+  const handleSelectDate = (date: Date) => {
+    if (sessionActive && !isSameDay(date, selectedDate)) {
+      Alert.alert(
+        'End workout?',
+        'Switching days will end the session in progress.',
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            // Bump the reference so the week strip scrolls back to the
+            // selected week if the user swiped away before cancelling.
+            onPress: () => setSelectedDate(new Date(selectedDate)),
+          },
+          {
+            text: 'End workout',
+            style: 'destructive',
+            onPress: () => setSelectedDate(startOfDay(date)),
+          },
+        ],
+      );
+      return;
+    }
+    setSelectedDate(date);
+  };
+
+  const handleAddExercise = (input: NewExerciseInput) => {
+    setPlansByDate((prev) => {
+      const current: DayPlan = prev[isoKey] ?? getPlanForDate(selectedDate);
+      const exercise: Exercise = {
+        id: `custom-${Date.now()}`,
+        title: input.title,
+        category: input.category,
+        durationLabel: formatDurationLabel(input.durationSeconds),
+        durationSeconds: input.durationSeconds,
+        totalRounds: input.segments,
+        completedRounds: 0,
+      };
+      return {
+        ...prev,
+        [isoKey]: {
+          ...current,
+          [input.category]: [...current[input.category], exercise],
+        },
+      };
+    });
+    setAddVisible(false);
+  };
+
+  const handleDeleteExercise = (id: string) => {
+    setPlansByDate((prev) => {
+      const current: DayPlan = prev[isoKey] ?? getPlanForDate(selectedDate);
+      const remove = (list: Exercise[]) => list.filter((e) => e.id !== id);
+      return {
+        ...prev,
+        [isoKey]: {
+          warmup: remove(current.warmup),
+          workout: remove(current.workout),
+          cooldown: remove(current.cooldown),
+        },
+      };
+    });
   };
 
   const handleTap = (id: string) => {
@@ -222,21 +378,45 @@ export function DayScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.titleRow}>
-        <Image source={avatarSource} style={styles.avatar} />
-        <Text style={styles.title}>Workouts</Text>
+        <View style={styles.titleGroup}>
+          <Image source={avatarSource} style={styles.avatar} />
+          <Text style={styles.title}>Workouts</Text>
+        </View>
+        <Pressable
+          onPress={() => setAddVisible(true)}
+          disabled={sessionActive}
+          accessibilityRole="button"
+          accessibilityLabel="Add exercise"
+          style={({ pressed }) => [
+            styles.plusButton,
+            sessionActive && styles.plusButtonDisabled,
+            pressed && styles.pressed,
+          ]}
+          hitSlop={8}
+        >
+          <PlusIcon size={15} color={theme.colors.textPrimary} />
+        </Pressable>
       </View>
 
-      <WeekStrip selectedDate={selectedDate} onSelectDate={setSelectedDate} />
+      <WeekStrip selectedDate={selectedDate} onSelectDate={handleSelectDate} />
 
       <View style={styles.controlsRow}>
         {!sessionActive ? (
-          <Pressable
-            style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
-            onPress={handleStart}
-          >
-            <PlayIcon size={14} color={theme.colors.addButtonText} />
-            <Text style={styles.primaryButtonText}>Start</Text>
-          </Pressable>
+          justCompleted ? (
+            <View style={[styles.primaryButton, styles.doneButton]}>
+              <Text style={[styles.primaryButtonText, styles.doneButtonText]}>
+                Done
+              </Text>
+            </View>
+          ) : (
+            <Pressable
+              style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}
+              onPress={handleStart}
+            >
+              <PlayIcon size={14} color={theme.colors.addButtonText} />
+              <Text style={styles.primaryButtonText}>Start</Text>
+            </Pressable>
+          )
         ) : (
           <>
             {playing ? (
@@ -245,7 +425,9 @@ export function DayScreen() {
                 onPress={handlePause}
               >
                 <PauseIcon size={14} color={theme.colors.addButtonText} />
-                <Text style={styles.primaryButtonText}>Pause</Text>
+                <Text style={styles.primaryButtonText}>
+                  {isResting ? `Rest · ${restClock}` : 'Pause'}
+                </Text>
               </Pressable>
             ) : (
               <Pressable
@@ -259,6 +441,8 @@ export function DayScreen() {
             <Pressable
               style={({ pressed }) => [styles.resetButton, pressed && styles.pressed]}
               onPress={handleReset}
+              accessibilityRole="button"
+              accessibilityLabel="Reset workout"
             >
               <ResetIcon size={16} color={theme.colors.textPrimary} />
             </Pressable>
@@ -285,8 +469,10 @@ export function DayScreen() {
                     active={isActive}
                     activeRound={isActive ? activeRound : undefined}
                     secondsRemaining={isActive ? secondsLeft : undefined}
+                    running={playing}
                     disabled={sessionActive}
                     onTap={handleTap}
+                    onDelete={handleDeleteExercise}
                   />
                 );
               })}
@@ -294,6 +480,12 @@ export function DayScreen() {
           );
         })}
       </ScrollView>
+
+      <AddExerciseScreen
+        visible={addVisible}
+        onClose={() => setAddVisible(false)}
+        onAdd={handleAddExercise}
+      />
     </SafeAreaView>
   );
 }
@@ -306,10 +498,26 @@ const styles = StyleSheet.create({
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.sm,
+    justifyContent: 'space-between',
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.sm,
     paddingBottom: theme.spacing.md,
+  },
+  titleGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  plusButton: {
+    width: 33,
+    height: 33,
+    borderRadius: theme.radius.pill,
+    backgroundColor: theme.colors.buttonMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  plusButtonDisabled: {
+    opacity: 0.4,
   },
   avatar: {
     width: 33,
@@ -341,7 +549,7 @@ const styles = StyleSheet.create({
     width: 48,
     height: 48,
     borderRadius: theme.radius.pill,
-    backgroundColor: '#2C2C2C',
+    backgroundColor: theme.colors.buttonMuted,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -351,6 +559,13 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     ...theme.typography.addButton,
     color: theme.colors.addButtonText,
+    fontVariant: ['tabular-nums'],
+  },
+  doneButton: {
+    backgroundColor: theme.colors.accent,
+  },
+  doneButtonText: {
+    color: theme.colors.accentForeground,
   },
   list: {
     paddingHorizontal: theme.spacing.lg,

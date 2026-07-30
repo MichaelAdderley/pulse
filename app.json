@@ -9,7 +9,9 @@
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0B0B0C",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "bundleIdentifier": "com.matterdesign.pulse",
+      "buildNumber": "1"
     },
     "android": {
       "adaptiveIcon": {
@@ -23,6 +25,17 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#0B0B0C"
+        }
+      ]
+    ],
     "extra": {
       "eas": {
         "projectId": "ebbd16e7-41d2-466e-a616-8c78507a0aba"

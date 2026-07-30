@@ -46,12 +46,15 @@ export function WeekStrip({ selectedDate, onSelectDate }: Props) {
   const targetIndex = WEEKS_BEFORE + diffInWeeks(selectedWeekStart, todayWeekStart);
   const lastIndexRef = useRef(targetIndex);
 
+  // selectedDate is a dependency (not just targetIndex) so that when a swipe
+  // is rejected by the parent — e.g. the user cancels ending a session — a
+  // bumped selectedDate reference scrolls the strip back to the selected week.
   useEffect(() => {
     if (lastIndexRef.current !== targetIndex) {
       lastIndexRef.current = targetIndex;
       listRef.current?.scrollToIndex({ index: targetIndex, animated: true });
     }
-  }, [targetIndex]);
+  }, [targetIndex, selectedDate]);
 
   const handleMomentumEnd = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {

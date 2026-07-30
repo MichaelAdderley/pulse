@@ -2,10 +2,7 @@ export const theme = {
   colors: {
     background: '#000000',
     surface: '#16161A',
-    surfaceElevated: '#1E1E22',
-    selectedDay: '#2A2A2A',
     ringTrack: '#3A3A3A',
-    border: '#26262B',
     borderSubtle: '#1C1C20',
     textPrimary: '#FFFFFF',
     textSecondary: '#A0A0A6',
@@ -14,6 +11,8 @@ export const theme = {
     accentForeground: '#0B0B0C',
     addButtonBg: '#FFFFFF',
     addButtonText: '#000000',
+    buttonMuted: '#2C2C2C',
+    danger: '#FF453A',
   },
   spacing: {
     xs: 4,

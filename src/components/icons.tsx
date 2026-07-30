@@ -14,14 +14,6 @@ export function PlayIcon({ size = 14, color = '#000000' }: IconProps) {
   );
 }
 
-export function StopIcon({ size = 14, color = '#000000' }: IconProps) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 14 14">
-      <Rect x="3" y="3" width="8" height="8" fill={color} rx="1" />
-    </Svg>
-  );
-}
-
 export function PauseIcon({ size = 14, color = '#000000' }: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 14 14">
@@ -50,6 +42,32 @@ export function ResetIcon({ size = 16, color = '#FFFFFF' }: IconProps) {
         strokeLinecap="round"
       />
       <Path d="M4.5 13.5 L3.3 10.4 L6.6 10.4 Z" fill={color} />
+    </Svg>
+  );
+}
+
+export function PlusIcon({ size = 16, color = '#FFFFFF' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 16 16">
+      <Path
+        d="M8 3 V13 M3 8 H13"
+        stroke={color}
+        strokeWidth={1.8}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
+export function XIcon({ size = 16, color = '#FFFFFF' }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 16 16">
+      <Path
+        d="M4 4 L12 12 M12 4 L4 12"
+        stroke={color}
+        strokeWidth={1.8}
+        strokeLinecap="round"
+      />
     </Svg>
   );
 }
