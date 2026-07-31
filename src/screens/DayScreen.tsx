@@ -14,6 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ExerciseRow } from '../components/ExerciseRow';
 import { PauseIcon, PlayIcon, PlusIcon, ResetIcon } from '../components/icons';
+import { ReorderableSection } from '../components/ReorderableSection';
 import { WeekStrip } from '../components/WeekStrip';
 import { getPlanForDate, resetPlanProgress } from '../data/defaultPlan';
 import { theme } from '../theme';
@@ -95,6 +96,7 @@ export function DayScreen() {
   const [selectedDate, setSelectedDate] = useState<Date>(startOfDay(new Date()));
   const [plansByDate, setPlansByDate] = useState<Record<string, DayPlan>>({});
   const [addVisible, setAddVisible] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const isoKey = toISODate(selectedDate);
   const plan: DayPlan = useMemo(
@@ -338,6 +340,78 @@ export function DayScreen() {
     setAddVisible(false);
   };
 
+  // Days whose every exercise has all segments completed — shown green in
+  // the week strip. Only overridden days can qualify; untouched days use the
+  // default plan, which always starts at zero progress.
+  const completedDates = useMemo(() => {
+    const set = new Set<string>();
+    for (const [key, dayPlan] of Object.entries(plansByDate)) {
+      const all = [...dayPlan.warmup, ...dayPlan.workout, ...dayPlan.cooldown];
+      if (
+        all.length > 0 &&
+        all.every((e) => e.completedRounds >= e.totalRounds)
+      ) {
+        set.add(key);
+      }
+    }
+    return set;
+  }, [plansByDate]);
+
+  const editingExercise = useMemo(() => {
+    if (!editingId) return null;
+    return (
+      [...plan.warmup, ...plan.workout, ...plan.cooldown].find(
+        (e) => e.id === editingId,
+      ) ?? null
+    );
+  }, [editingId, plan]);
+
+  const handleUpdateExercise = (id: string, input: NewExerciseInput) => {
+    setPlansByDate((prev) => {
+      const current: DayPlan = prev[isoKey] ?? getPlanForDate(selectedDate);
+      const target = [
+        ...current.warmup,
+        ...current.workout,
+        ...current.cooldown,
+      ].find((e) => e.id === id);
+      if (!target) return prev;
+
+      const updated: Exercise = {
+        ...target,
+        title: input.title,
+        category: input.category,
+        durationLabel: formatDurationLabel(input.durationSeconds),
+        durationSeconds: input.durationSeconds,
+        totalRounds: input.segments,
+        completedRounds: Math.min(target.completedRounds, input.segments),
+      };
+
+      // Same category: replace in place to preserve position. Category
+      // changed: remove from the old list and append to the new one.
+      if (input.category === target.category) {
+        const replace = (list: Exercise[]) =>
+          list.map((e) => (e.id === id ? updated : e));
+        return {
+          ...prev,
+          [isoKey]: {
+            warmup: replace(current.warmup),
+            workout: replace(current.workout),
+            cooldown: replace(current.cooldown),
+          },
+        };
+      }
+      const remove = (list: Exercise[]) => list.filter((e) => e.id !== id);
+      const moved: DayPlan = {
+        warmup: remove(current.warmup),
+        workout: remove(current.workout),
+        cooldown: remove(current.cooldown),
+      };
+      moved[input.category] = [...moved[input.category], updated];
+      return { ...prev, [isoKey]: moved };
+    });
+    setEditingId(null);
+  };
+
   const handleDeleteExercise = (id: string) => {
     setPlansByDate((prev) => {
       const current: DayPlan = prev[isoKey] ?? getPlanForDate(selectedDate);
@@ -350,6 +424,21 @@ export function DayScreen() {
           cooldown: remove(current.cooldown),
         },
       };
+    });
+  };
+
+  const handleReorder = (
+    category: ExerciseCategory,
+    fromIndex: number,
+    toIndex: number,
+  ) => {
+    setPlansByDate((prev) => {
+      const current: DayPlan = prev[isoKey] ?? getPlanForDate(selectedDate);
+      const list = [...current[category]];
+      const [moved] = list.splice(fromIndex, 1);
+      if (!moved) return prev;
+      list.splice(toIndex, 0, moved);
+      return { ...prev, [isoKey]: { ...current, [category]: list } };
     });
   };
 
@@ -398,7 +487,11 @@ export function DayScreen() {
         </Pressable>
       </View>
 
-      <WeekStrip selectedDate={selectedDate} onSelectDate={handleSelectDate} />
+      <WeekStrip
+        selectedDate={selectedDate}
+        onSelectDate={handleSelectDate}
+        completedDates={completedDates}
+      />
 
       <View style={styles.controlsRow}>
         {!sessionActive ? (
@@ -458,13 +551,16 @@ export function DayScreen() {
           const exercises = plan[section.key];
           if (exercises.length === 0) return null;
           return (
-            <View key={section.key} style={styles.section}>
-              <Text style={styles.sectionLabel}>{section.label}</Text>
-              {exercises.map((exercise) => {
+            <ReorderableSection
+              key={section.key}
+              label={section.label}
+              exercises={exercises}
+              reorderEnabled={!sessionActive}
+              onReorder={(from, to) => handleReorder(section.key, from, to)}
+              renderExercise={(exercise) => {
                 const isActive = exercise.id === activeExerciseId;
                 return (
                   <ExerciseRow
-                    key={exercise.id}
                     exercise={exercise}
                     active={isActive}
                     activeRound={isActive ? activeRound : undefined}
@@ -472,19 +568,28 @@ export function DayScreen() {
                     running={playing}
                     disabled={sessionActive}
                     onTap={handleTap}
+                    onEdit={setEditingId}
                     onDelete={handleDeleteExercise}
                   />
                 );
-              })}
-            </View>
+              }}
+            />
           );
         })}
       </ScrollView>
 
       <AddExerciseScreen
-        visible={addVisible}
-        onClose={() => setAddVisible(false)}
-        onAdd={handleAddExercise}
+        visible={addVisible || editingId !== null}
+        editing={editingExercise}
+        onClose={() => {
+          setAddVisible(false);
+          setEditingId(null);
+        }}
+        onSubmit={(input) =>
+          editingId
+            ? handleUpdateExercise(editingId, input)
+            : handleAddExercise(input)
+        }
       />
     </SafeAreaView>
   );
@@ -571,13 +676,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.sm,
     paddingBottom: theme.spacing.xxl,
-  },
-  section: {
-    marginBottom: theme.spacing.lg,
-  },
-  sectionLabel: {
-    ...theme.typography.sectionLabel,
-    color: theme.colors.textTertiary,
-    marginBottom: theme.spacing.sm,
   },
 });

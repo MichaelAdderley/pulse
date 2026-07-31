@@ -18,6 +18,7 @@ type Props = {
   running?: boolean;
   disabled?: boolean;
   onTap?: (id: string) => void;
+  onEdit?: (id: string) => void;
   onDelete?: (id: string) => void;
 };
 
@@ -29,6 +30,7 @@ export function ExerciseRow({
   running = false,
   disabled = false,
   onTap,
+  onEdit,
   onDelete,
 }: Props) {
   const swipeableRef = useRef<SwipeableMethods>(null);
@@ -88,19 +90,39 @@ export function ExerciseRow({
         accessibilityLabel={`Delete ${exercise.title}`}
         style={({ pressed }) => [styles.deleteAction, pressed && styles.deletePressed]}
       >
-        <Text style={styles.deleteText}>Delete</Text>
+        <Text style={styles.actionText}>Delete</Text>
       </Pressable>
     </View>
   );
 
+  const renderLeftActions = () =>
+    onEdit ? (
+      <View style={styles.editActionWrap}>
+        <Pressable
+          onPress={() => {
+            swipeableRef.current?.close();
+            onEdit(exercise.id);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={`Edit ${exercise.title}`}
+          style={({ pressed }) => [styles.editAction, pressed && styles.actionPressed]}
+        >
+          <Text style={styles.actionText}>Edit</Text>
+        </Pressable>
+      </View>
+    ) : null;
+
   return (
     <ReanimatedSwipeable
       ref={swipeableRef}
-      enabled={!disabled && !!onDelete}
+      enabled={!disabled && (!!onDelete || !!onEdit)}
       friction={2}
       rightThreshold={40}
+      leftThreshold={40}
       overshootRight={false}
+      overshootLeft={false}
       renderRightActions={renderRightActions}
+      renderLeftActions={renderLeftActions}
     >
       <Pressable
         onPress={() => !disabled && onTap?.(exercise.id)}
@@ -189,10 +211,26 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.md,
   },
+  editActionWrap: {
+    justifyContent: 'center',
+    paddingRight: theme.spacing.md,
+  },
+  editAction: {
+    height: '100%',
+    minWidth: 76,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.edit,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.md,
+  },
   deletePressed: {
     opacity: 0.85,
   },
-  deleteText: {
+  actionPressed: {
+    opacity: 0.85,
+  },
+  actionText: {
     ...theme.typography.label,
     fontSize: 14,
     fontWeight: '600',

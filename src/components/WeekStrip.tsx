@@ -18,18 +18,21 @@ import {
   isSameDay,
   startOfDay,
   startOfWeek,
+  toISODate,
 } from '../utils/date';
 
 type Props = {
   selectedDate: Date;
   onSelectDate: (date: Date) => void;
+  /** ISO dates (yyyy-mm-dd) whose plan is fully completed. */
+  completedDates?: Set<string>;
 };
 
 const WEEKS_BEFORE = 52;
 const WEEKS_AFTER = 52;
 const TOTAL_WEEKS = WEEKS_BEFORE + 1 + WEEKS_AFTER;
 
-export function WeekStrip({ selectedDate, onSelectDate }: Props) {
+export function WeekStrip({ selectedDate, onSelectDate, completedDates }: Props) {
   const { width: screenWidth } = useWindowDimensions();
   const listRef = useRef<FlatList<Date>>(null);
 
@@ -79,6 +82,7 @@ export function WeekStrip({ selectedDate, onSelectDate }: Props) {
           {days.map((day) => {
             const isSelected = isSameDay(day, selectedDate);
             const isToday = isSameDay(day, today);
+            const isComplete = completedDates?.has(toISODate(day)) ?? false;
             return (
               <Pressable
                 key={day.toISOString()}
@@ -98,6 +102,7 @@ export function WeekStrip({ selectedDate, onSelectDate }: Props) {
                   style={[
                     styles.number,
                     isSelected && styles.numberSelected,
+                    isComplete && styles.numberComplete,
                   ]}
                 >
                   {day.getDate()}
@@ -108,7 +113,7 @@ export function WeekStrip({ selectedDate, onSelectDate }: Props) {
         </View>
       );
     },
-    [screenWidth, selectedDate, today, onSelectDate],
+    [screenWidth, selectedDate, today, onSelectDate, completedDates],
   );
 
   const getItemLayout = useCallback(
@@ -180,5 +185,8 @@ const styles = StyleSheet.create({
   },
   numberSelected: {
     color: theme.colors.textPrimary,
+  },
+  numberComplete: {
+    color: theme.colors.accent,
   },
 });

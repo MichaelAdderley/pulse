@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { XIcon } from '../components/icons';
 import { theme } from '../theme';
-import { ExerciseCategory } from '../types';
+import { Exercise, ExerciseCategory } from '../types';
 
 export type NewExerciseInput = {
   title: string;
@@ -23,8 +23,10 @@ export type NewExerciseInput = {
 
 type Props = {
   visible: boolean;
+  /** When set, the sheet edits this exercise instead of creating a new one. */
+  editing?: Exercise | null;
   onClose: () => void;
-  onAdd: (input: NewExerciseInput) => void;
+  onSubmit: (input: NewExerciseInput) => void;
 };
 
 type DurationUnit = 'sec' | 'min';
@@ -62,23 +64,38 @@ function Chip({ label, selected, onPress }: ChipProps) {
   );
 }
 
-export function AddExerciseScreen({ visible, onClose, onAdd }: Props) {
+export function AddExerciseScreen({ visible, editing, onClose, onSubmit }: Props) {
   const [title, setTitle] = useState('');
   const [durationValue, setDurationValue] = useState('');
   const [durationUnit, setDurationUnit] = useState<DurationUnit | null>(null);
   const [segments, setSegments] = useState<number | null>(null);
   const [category, setCategory] = useState<ExerciseCategory | null>(null);
 
-  // Fresh form every time the screen is opened
+  // On open: prefill from the exercise being edited, or start blank
   useEffect(() => {
-    if (visible) {
+    if (!visible) return;
+    if (editing) {
+      setTitle(editing.title);
+      if (
+        editing.durationSeconds >= 60 &&
+        editing.durationSeconds % 60 === 0
+      ) {
+        setDurationValue(String(editing.durationSeconds / 60));
+        setDurationUnit('min');
+      } else {
+        setDurationValue(String(editing.durationSeconds));
+        setDurationUnit('sec');
+      }
+      setSegments(editing.totalRounds);
+      setCategory(editing.category);
+    } else {
       setTitle('');
       setDurationValue('');
       setDurationUnit(null);
       setSegments(null);
       setCategory(null);
     }
-  }, [visible]);
+  }, [visible, editing]);
 
   const parsedDuration = parseInt(durationValue, 10);
   const durationSeconds =
@@ -93,9 +110,9 @@ export function AddExerciseScreen({ visible, onClose, onAdd }: Props) {
     segments !== null &&
     category !== null;
 
-  const handleAdd = () => {
+  const handleSubmit = () => {
     if (!canAdd || segments === null || category === null) return;
-    onAdd({
+    onSubmit({
       title: title.trim(),
       category,
       durationSeconds,
@@ -115,7 +132,9 @@ export function AddExerciseScreen({ visible, onClose, onAdd }: Props) {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>New exercise</Text>
+          <Text style={styles.headerTitle}>
+            {editing ? 'Edit exercise' : 'New exercise'}
+          </Text>
           <Pressable
             onPress={onClose}
             accessibilityRole="button"
@@ -193,7 +212,7 @@ export function AddExerciseScreen({ visible, onClose, onAdd }: Props) {
 
         <View style={styles.footer}>
           <Pressable
-            onPress={handleAdd}
+            onPress={handleSubmit}
             disabled={!canAdd}
             style={({ pressed }) => [
               styles.addButton,
@@ -201,7 +220,9 @@ export function AddExerciseScreen({ visible, onClose, onAdd }: Props) {
               pressed && canAdd && styles.pressed,
             ]}
           >
-            <Text style={styles.addButtonText}>Add exercise</Text>
+            <Text style={styles.addButtonText}>
+              {editing ? 'Save changes' : 'Add exercise'}
+            </Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>

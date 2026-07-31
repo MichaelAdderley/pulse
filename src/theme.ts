@@ -13,6 +13,7 @@ export const theme = {
     addButtonText: '#000000',
     buttonMuted: '#2C2C2C',
     danger: '#FF453A',
+    edit: '#0A84FF',
   },
   spacing: {
     xs: 4,
