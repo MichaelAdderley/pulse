@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AudioPlayer, setAudioModeAsync, useAudioPlayer } from 'expo-audio';
 import * as Haptics from 'expo-haptics';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -24,6 +25,19 @@ import { formatDurationLabel } from '../utils/time';
 import { AddExerciseScreen, NewExerciseInput } from './AddExerciseScreen';
 
 const STORAGE_KEY = 'pulse.plansByDate.v1';
+
+const completeSound = require('../../assets/sounds/complete.wav');
+const startSound = require('../../assets/sounds/start.wav');
+const sessionCompleteSound = require('../../assets/sounds/session-complete.wav');
+
+function playCue(player: AudioPlayer) {
+  try {
+    player.seekTo(0);
+    player.play();
+  } catch {
+    // Audio must never break the session timer
+  }
+}
 
 type SectionDef = {
   key: ExerciseCategory;
@@ -166,6 +180,19 @@ export function DayScreen() {
     };
   }, [sessionActive]);
 
+  // Audio cues: chime when an item completes, tone when the next one starts.
+  // Play through the silent switch (phone is usually across the room during a
+  // workout) and mix over any music instead of interrupting it.
+  const completePlayer = useAudioPlayer(completeSound);
+  const startPlayer = useAudioPlayer(startSound);
+  const sessionCompletePlayer = useAudioPlayer(sessionCompleteSound);
+  useEffect(() => {
+    setAudioModeAsync({
+      playsInSilentMode: true,
+      interruptionMode: 'mixWithOthers',
+    }).catch(() => {});
+  }, []);
+
   useEffect(
     () => () => {
       if (completedTimerRef.current) clearTimeout(completedTimerRef.current);
@@ -186,6 +213,7 @@ export function DayScreen() {
   const completeSession = () => {
     endSession();
     setJustCompleted(true);
+    playCue(sessionCompletePlayer);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
       () => {},
     );
@@ -228,6 +256,9 @@ export function DayScreen() {
       setStepIndex(idx);
       setSecondsLeft(Math.ceil((endsAt - now) / 1000));
       if (advanced) {
+        // Landing on a rest means an exercise just finished; landing on an
+        // exercise means the next one is starting.
+        playCue(seq[idx].kind === 'exercise' ? startPlayer : completePlayer);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
       }
     };
@@ -274,6 +305,7 @@ export function DayScreen() {
     setSecondsLeft(first.durationSec);
     setSessionActive(true);
     setPlaying(true);
+    playCue(startPlayer);
   };
 
   const handlePause = () => {
