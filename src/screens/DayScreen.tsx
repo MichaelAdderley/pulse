@@ -21,10 +21,13 @@ import { getPlanForDate, resetPlanProgress } from '../data/defaultPlan';
 import { theme } from '../theme';
 import { DayPlan, Exercise, ExerciseCategory } from '../types';
 import { isSameDay, startOfDay, toISODate } from '../utils/date';
+import { SessionRecord } from '../utils/metrics';
 import { formatDurationLabel } from '../utils/time';
+import { ActivityScreen } from './ActivityScreen';
 import { AddExerciseScreen, NewExerciseInput } from './AddExerciseScreen';
 
 const STORAGE_KEY = 'pulse.plansByDate.v1';
+const SESSIONS_KEY = 'pulse.sessions.v1';
 
 const completeSound = require('../../assets/sounds/complete.wav');
 const startSound = require('../../assets/sounds/start.wav');
@@ -106,10 +109,17 @@ function setExerciseRound(plan: DayPlan, id: string, round: number): DayPlan {
 
 const avatarSource = require('../../assets/avatar.png');
 
-export function DayScreen() {
+type DayScreenProps = {
+  /** Fires once saved plans have been restored from storage on launch. */
+  onHydrated?: () => void;
+};
+
+export function DayScreen({ onHydrated }: DayScreenProps) {
   const [selectedDate, setSelectedDate] = useState<Date>(startOfDay(new Date()));
   const [plansByDate, setPlansByDate] = useState<Record<string, DayPlan>>({});
+  const [sessions, setSessions] = useState<SessionRecord[]>([]);
   const [addVisible, setAddVisible] = useState(false);
+  const [activityVisible, setActivityVisible] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const isoKey = toISODate(selectedDate);
@@ -136,24 +146,40 @@ export function DayScreen() {
   const pausedRemainingMsRef = useRef(0);
   const completedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Restore saved plans on launch; persist on every change after that
+  // Restore saved plans and session log on launch; persist on change after
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY)
-      .then((raw) => {
-        if (!raw) return;
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') {
-          setPlansByDate(parsed as Record<string, DayPlan>);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setHydrated(true));
+    Promise.all([
+      AsyncStorage.getItem(STORAGE_KEY)
+        .then((raw) => {
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            setPlansByDate(parsed as Record<string, DayPlan>);
+          }
+        })
+        .catch(() => {}),
+      AsyncStorage.getItem(SESSIONS_KEY)
+        .then((raw) => {
+          if (!raw) return;
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) setSessions(parsed as SessionRecord[]);
+        })
+        .catch(() => {}),
+    ]).finally(() => {
+      setHydrated(true);
+      onHydrated?.();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     if (!hydrated) return;
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(plansByDate)).catch(() => {});
   }, [plansByDate, hydrated]);
+  useEffect(() => {
+    if (!hydrated) return;
+    AsyncStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions)).catch(() => {});
+  }, [sessions, hydrated]);
 
   const endSession = () => {
     stepIndexRef.current = 0;
@@ -211,6 +237,26 @@ export function DayScreen() {
   };
 
   const completeSession = () => {
+    // Log the finished session so Activity metrics reflect real wall-clock
+    // time (including rests), not just per-exercise sums.
+    const seq = sequenceRef.current;
+    const activeSeconds = seq
+      .filter((s) => s.kind === 'exercise')
+      .reduce((sum, s) => sum + s.durationSec, 0);
+    const restSeconds = seq
+      .filter((s) => s.kind === 'rest')
+      .reduce((sum, s) => sum + s.durationSec, 0);
+    setSessions((prev) => [
+      ...prev,
+      {
+        dateKey: isoKey,
+        completedAt: new Date().toISOString(),
+        activeSeconds,
+        restSeconds,
+        exerciseCount: seq.filter((s) => s.kind === 'exercise').length,
+      },
+    ]);
+
     endSession();
     setJustCompleted(true);
     playCue(sessionCompletePlayer);
@@ -499,10 +545,17 @@ export function DayScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.titleRow}>
-        <View style={styles.titleGroup}>
+        <Pressable
+          onPress={() => setActivityVisible(true)}
+          disabled={sessionActive}
+          accessibilityRole="button"
+          accessibilityLabel="View activity"
+          style={({ pressed }) => [styles.titleGroup, pressed && styles.pressed]}
+          hitSlop={8}
+        >
           <Image source={avatarSource} style={styles.avatar} />
           <Text style={styles.title}>Workouts</Text>
-        </View>
+        </Pressable>
         <Pressable
           onPress={() => setAddVisible(true)}
           disabled={sessionActive}
@@ -609,6 +662,13 @@ export function DayScreen() {
           );
         })}
       </ScrollView>
+
+      <ActivityScreen
+        visible={activityVisible}
+        plansByDate={plansByDate}
+        sessions={sessions}
+        onClose={() => setActivityVisible(false)}
+      />
 
       <AddExerciseScreen
         visible={addVisible || editingId !== null}
